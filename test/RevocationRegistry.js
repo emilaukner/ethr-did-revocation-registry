@@ -133,4 +133,11 @@ describe("CredentialRevocationRegistry", function () {
       "Access denied: Only holder or issuer can view credentials"
     );
   });
+
+  it("should prevent trying to view non-existent credentials", async function () {
+    const holderProvider = await ethers.getSigner(holder);
+    await expect(
+      revocationRegistry.connect(holderProvider).getCredentialsForHolder(holder)
+    ).to.be.revertedWith("No credentials found");
+  });
 });

@@ -1,15 +1,16 @@
 {
-  "name": "hardhat",
+  "name": "revocation-registry",
   "version": "1.0.0",
-  "description": "",
-  "license": "ISC",
-  "author": "",
+  "description": "A revocation registry for Verifable Credentials",
+  "license": "MIT",
+  "author": "Emil Aukner",
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "devDependencies": {
+    "@nomicfoundation/hardhat-ignition": "^0.15.9",
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "hardhat": "^2.22.18"
   }

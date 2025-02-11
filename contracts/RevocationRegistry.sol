@@ -82,6 +82,7 @@ contract CredentialRevocationRegistry {
 
     /**
      * Function to get all credentials issued to a holder
+     * Function Caller must be the holder or the issuer of the credential using a signer
      * @param holder address of the credential holder 
      */
     function getCredentialsForHolder(address holder) external view returns (Credential[] memory) {
@@ -91,6 +92,8 @@ contract CredentialRevocationRegistry {
         );
 
         bytes32[] memory credentialHashes = holderCredentials[holder];
+        require(credentialHashes.length > 0, "No credentials found");
+
         Credential[] memory creds = new Credential[](credentialHashes.length);
 
         uint256 count = 0;
