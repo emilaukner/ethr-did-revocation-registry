@@ -11,7 +11,6 @@ contract CredentialRevocationRegistry {
 
     mapping(address => bytes32[]) private holderCredentials; // holderAddress => vcIDHash[]
     mapping(bytes32 => Credential) private credentials; // vcIDHash => Credential
-    mapping(address => uint256) private nonces; // holderAddress => nonce
     mapping(address => mapping(address => bool)) private isIssuerOfHolder; // issuerAddress => holderAddress => bool
 
     event CredentialIssued(
@@ -105,6 +104,7 @@ contract CredentialRevocationRegistry {
     }
 
     /**
+     * WARNING: This function is for testing purposes only and should not be used in production due to risk of replay of signatures
      * Function to cleanup revoked credentials for a holder
      * @param holder address of the credential holder
      * @param sigV  The recovery id of the signature
@@ -122,11 +122,7 @@ contract CredentialRevocationRegistry {
         require(holder != address(0), "Holder address cannot be zero");
 
         bytes32 prefixedHash = keccak256(
-            abi.encodePacked(
-                "\x19Ethereum Signed Message:\n32",
-                hash,
-                nonces[holder]
-            )
+            abi.encodePacked("\x19Ethereum Signed Message:\n32", hash)
         );
         address signer = ecrecover(prefixedHash, sigV, sigR, sigS);
 
@@ -134,7 +130,6 @@ contract CredentialRevocationRegistry {
             signer == holder || _isIssuerForHolder(signer, holder),
             "Invalid signature"
         );
-        nonces[holder]++;
 
         bytes32[] storage credList = holderCredentials[holder];
         uint256 length = credList.length;
@@ -154,6 +149,7 @@ contract CredentialRevocationRegistry {
     }
 
     /**
+     * WARNING: This function is for testing purposes only and should not be used in production due to risk of replay of signatures
      * Function to get credentials for a holder
      * @param holder address of the credential holder
      * @param sigV  The recovery id of the signature
