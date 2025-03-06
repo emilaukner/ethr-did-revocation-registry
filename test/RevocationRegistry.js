@@ -211,4 +211,42 @@ describe('CredentialRevocationRegistry', function () {
 			)
 		).to.be.revertedWith('Invalid signature');
 	});
+
+	it('Should remove revoked credentials using cleanupRevokedCredentials', async function () {
+		await revocationRegistry
+			.connect(issuer1)
+			.issueCredential(holderSigner.address, vcID, ttl);
+
+		await revocationRegistry
+			.connect(issuer1)
+			.revokeCredential(holderSigner.address, vcID);
+
+		expect(await revocationRegistry.isRevoked(vcID)).to.be.true;
+
+		const messageHash = ethers.keccak256(ethers.toUtf8Bytes('Cleanup Request'));
+		const signedMessage = await holderSigner.signMessage(
+			ethers.getBytes(messageHash)
+		);
+		const signature = ethers.Signature.from(signedMessage);
+
+		// Perform cleanup
+		await revocationRegistry.cleanupRevokedCredentials(
+			holderSigner.address,
+			signature.v,
+			signature.r,
+			signature.s,
+			messageHash
+		);
+
+		// Verify credential has been removed
+		await expect(
+			revocationRegistry.getCredentialsForHolder(
+				holderSigner.address,
+				signature.v,
+				signature.r,
+				signature.s,
+				messageHash
+			)
+		).to.be.revertedWith('No credentials found');
+	});
 });

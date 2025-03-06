@@ -137,8 +137,10 @@ contract CredentialRevocationRegistry {
 
         for (uint256 i = 0; i < length; i++) {
             if (!credentials[credList[i]].revoked) {
-                credList[newLength] = credList[i];
+                credList[newLength] = credList[i]; // Keep non-revoked credentials
                 newLength++;
+            } else {
+                _deleteCredential(credList[i]); // Delete revoked credential
             }
         }
 
@@ -146,6 +148,23 @@ contract CredentialRevocationRegistry {
         while (credList.length > newLength) {
             credList.pop();
         }
+    }
+
+    /**
+     * @dev Internal function to permanently delete a credential from storage
+     * @param credentialHash The hash of the credential to delete
+     */
+    function _deleteCredential(bytes32 credentialHash) internal {
+        require(
+            credentials[credentialHash].issuer != address(0),
+            "Credential does not exist"
+        );
+        require(
+            credentials[credentialHash].revoked,
+            "Credential must be revoked first"
+        );
+
+        delete credentials[credentialHash]; // Remove from storage
     }
 
     /**
