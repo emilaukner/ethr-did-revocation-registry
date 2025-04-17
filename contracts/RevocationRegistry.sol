@@ -136,11 +136,17 @@ contract CredentialRevocationRegistry {
         uint256 newLength = 0;
 
         for (uint256 i = 0; i < length; i++) {
-            if (!credentials[credList[i]].revoked) {
-                credList[newLength] = credList[i]; // Keep non-revoked credentials
+            Credential storage cred = credentials[credList[i]];
+            bool isExpired = block.timestamp > cred.ttl;
+
+            if (!cred.revoked && !isExpired) {
+                credList[newLength] = credList[i]; // Keep valid credentials
                 newLength++;
             } else {
-                _deleteCredential(credList[i]); // Delete revoked credential
+                if (!cred.revoked && isExpired) {
+                    cred.revoked = true; // Explicitly revoke expired credential
+                }
+                _deleteCredential(credList[i]);
             }
         }
 

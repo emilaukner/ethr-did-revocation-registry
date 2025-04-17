@@ -249,4 +249,41 @@ describe('CredentialRevocationRegistry', function () {
 			)
 		).to.be.revertedWith('No credentials found');
 	});
+
+	it('Should revoke and remove expired credentials using cleanupRevokedCredentials', async function () {
+		const shortTTL = (await time.latest()) + 5; // TTL 5 seconds in the future
+
+		await revocationRegistry
+			.connect(issuer1)
+			.issueCredential(holderSigner.address, vcID, shortTTL);
+
+		// Wait for expiration
+		await time.increase(6);
+
+		// Call cleanup
+		const messageHash = ethers.keccak256(ethers.toUtf8Bytes('Cleanup Request'));
+		const signedMessage = await holderSigner.signMessage(
+			ethers.getBytes(messageHash)
+		);
+		const signature = ethers.Signature.from(signedMessage);
+
+		await revocationRegistry.cleanupRevokedCredentials(
+			holderSigner.address,
+			signature.v,
+			signature.r,
+			signature.s,
+			messageHash
+		);
+
+		// Confirm the credential was deleted
+		await expect(
+			revocationRegistry.getCredentialsForHolder(
+				holderSigner.address,
+				signature.v,
+				signature.r,
+				signature.s,
+				messageHash
+			)
+		).to.be.revertedWith('No credentials found');
+	});
 });
