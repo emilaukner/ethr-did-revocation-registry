@@ -187,6 +187,39 @@ describe('CredentialRevocationRegistry', function () {
 		expect(credentials[0].revoked).to.equal(false);
 	});
 
+	it('Should return only issuer-specific credentials when queried by an issuer', async function () {
+		const vcID1 = 'cred-issuer1';
+		const vcID2 = 'cred-issuer2';
+
+		// Both issuers issue different credentials to the same holder
+		await revocationRegistry
+			.connect(issuer1)
+			.issueCredential(holderSigner.address, vcID1, ttl);
+		await revocationRegistry
+			.connect(issuer2)
+			.issueCredential(holderSigner.address, vcID2, ttl);
+
+		// issuer1 signs an access message
+		const messageHash = ethers.keccak256(ethers.toUtf8Bytes('Issuer Access'));
+		const signedMessage = await issuer1.signMessage(
+			ethers.getBytes(messageHash)
+		);
+		const signature = ethers.Signature.from(signedMessage);
+
+		// issuer1 tries to fetch credentials for the holder
+		const creds = await revocationRegistry.getCredentialsForHolder(
+			holderSigner.address,
+			signature.v,
+			signature.r,
+			signature.s,
+			messageHash
+		);
+
+		expect(creds.length).to.equal(1);
+		expect(creds[0].issuer).to.equal(issuer1.address);
+		expect(creds[0].vcID).to.equal(vcID1);
+	});
+
 	it('Should prevent unauthorized access to credentials with an invalid signature', async function () {
 		await revocationRegistry
 			.connect(issuer1)

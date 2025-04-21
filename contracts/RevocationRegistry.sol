@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 contract CredentialRevocationRegistry {
     struct Credential {
+        string vcID; // Id of the credential
         address issuer; // address of the credential issuer
         address holder; // address of the credential holder
         uint256 ttl; // seconds until the credential expires
@@ -53,6 +54,7 @@ contract CredentialRevocationRegistry {
         );
 
         credentials[hashedVcID] = Credential({
+            vcID: vcID,
             issuer: msg.sender,
             holder: holder,
             ttl: ttl,
@@ -191,6 +193,7 @@ contract CredentialRevocationRegistry {
         bytes32 hash
     ) external view returns (Credential[] memory) {
         require(holder != address(0), "Holder address cannot be zero");
+
         bytes32 prefixedHash = keccak256(
             abi.encodePacked("\x19Ethereum Signed Message:\n32", hash)
         );
@@ -203,12 +206,38 @@ contract CredentialRevocationRegistry {
         bytes32[] storage credentialHashes = holderCredentials[holder];
         require(credentialHashes.length > 0, "No credentials found");
 
-        Credential[] memory result = new Credential[](credentialHashes.length);
-        for (uint256 i = 0; i < credentialHashes.length; i++) {
-            result[i] = credentials[credentialHashes[i]];
+        // If signer is holder, return all credentials
+        if (signer == holder) {
+            Credential[] memory allCreds = new Credential[](
+                credentialHashes.length
+            );
+            for (uint256 i = 0; i < credentialHashes.length; i++) {
+                allCreds[i] = credentials[credentialHashes[i]];
+            }
+            return allCreds;
         }
 
-        return result;
+        // Else, signer is issuer → filter only their credentials
+        uint256 count = 0;
+
+        // First pass: count matching credentials
+        for (uint256 i = 0; i < credentialHashes.length; i++) {
+            if (credentials[credentialHashes[i]].issuer == signer) {
+                count++;
+            }
+        }
+
+        Credential[] memory filteredCreds = new Credential[](count);
+        uint256 j = 0;
+        for (uint256 i = 0; i < credentialHashes.length; i++) {
+            Credential memory cred = credentials[credentialHashes[i]];
+            if (cred.issuer == signer) {
+                filteredCreds[j] = cred;
+                j++;
+            }
+        }
+
+        return filteredCreds;
     }
 
     /**
