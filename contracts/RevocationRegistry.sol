@@ -88,74 +88,20 @@ contract CredentialRevocationRegistry {
 
         cred.revoked = true;
 
-        emit CredentialRevoked(hashedVcID, msg.sender, block.timestamp);
-    }
-
-    /**
-     * Function to check if a credential is revoked
-     * @param vcID  The unique identifier of the credential
-     * @return bool  True if the credential is revoked or does not exist
-     */
-    function isRevoked(string memory vcID) external view returns (bool) {
-        bytes32 hashedVcID = _hashVcID(vcID);
-        Credential storage cred = credentials[hashedVcID];
-        if (cred.issuer == address(0)) {
-            return true;
-        }
-        return cred.revoked || (block.timestamp > cred.ttl);
-    }
-
-    /**
-     * WARNING: This function is for testing purposes only and should not be used in production due to risk of replay of signatures
-     * Function to cleanup revoked credentials for a holder
-     * @param holder address of the credential holder
-     * @param sigV  The recovery id of the signature
-     * @param sigR  The r value of the signature
-     * @param sigS  The s value of the signature
-     * @param hash  The hash of the message
-     */
-    function cleanupRevokedCredentials(
-        address holder,
-        uint8 sigV,
-        bytes32 sigR,
-        bytes32 sigS,
-        bytes32 hash
-    ) external {
-        require(holder != address(0), "Holder address cannot be zero");
-
-        bytes32 prefixedHash = keccak256(
-            abi.encodePacked("\x19Ethereum Signed Message:\n32", hash)
-        );
-        address signer = ecrecover(prefixedHash, sigV, sigR, sigS);
-
-        require(
-            signer == holder || _isIssuerForHolder(signer, holder),
-            "Invalid signature"
-        );
-
+        // Remove from holderCredentials list
         bytes32[] storage credList = holderCredentials[holder];
-        uint256 length = credList.length;
-        uint256 newLength = 0;
-
-        for (uint256 i = 0; i < length; i++) {
-            Credential storage cred = credentials[credList[i]];
-            bool isExpired = block.timestamp > cred.ttl;
-
-            if (!cred.revoked && !isExpired) {
-                credList[newLength] = credList[i]; // Keep valid credentials
-                newLength++;
-            } else {
-                if (!cred.revoked && isExpired) {
-                    cred.revoked = true; // Explicitly revoke expired credential
-                }
-                _deleteCredential(credList[i]);
+        for (uint256 i = 0; i < credList.length; i++) {
+            if (credList[i] == hashedVcID) {
+                credList[i] = credList[credList.length - 1];
+                credList.pop();
+                break;
             }
         }
 
-        // Remove redundant entries
-        while (credList.length > newLength) {
-            credList.pop();
-        }
+        // Remove the credential from the holder's storage
+        _deleteCredential(hashedVcID);
+
+        emit CredentialRevoked(hashedVcID, msg.sender, block.timestamp);
     }
 
     /**
@@ -173,6 +119,20 @@ contract CredentialRevocationRegistry {
         );
 
         delete credentials[credentialHash]; // Remove from storage
+    }
+
+    /**
+     * Function to check if a credential is revoked
+     * @param vcID  The unique identifier of the credential
+     * @return bool  True if the credential is revoked or does not exist
+     */
+    function isRevoked(string memory vcID) external view returns (bool) {
+        bytes32 hashedVcID = _hashVcID(vcID);
+        Credential storage cred = credentials[hashedVcID];
+        if (cred.issuer == address(0)) {
+            return true;
+        }
+        return cred.revoked || (block.timestamp > cred.ttl);
     }
 
     /**
