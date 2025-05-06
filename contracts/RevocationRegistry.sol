@@ -10,9 +10,10 @@ contract CredentialRevocationRegistry {
         bool revoked; // flag to indicate if the credential is revoked
     }
 
-    mapping(address => bytes32[]) private holderCredentials; // holderAddress => vcIDHash[]
-    mapping(bytes32 => Credential) private credentials; // vcIDHash => Credential
-    mapping(address => mapping(address => bool)) private isIssuerOfHolder; // issuerAddress => holderAddress => bool
+    mapping(address => bytes32[]) private holderCredentials;
+    mapping(bytes32 => Credential) private credentials;
+    mapping(address => mapping(address => bool)) private isIssuerOfHolder;
+    mapping(address => uint256) public nonces;
 
     event CredentialIssued(
         bytes32 indexed credentialHash,
@@ -30,6 +31,10 @@ contract CredentialRevocationRegistry {
      */
     function _hashVcID(string memory vcID) private pure returns (bytes32) {
         return keccak256(abi.encodePacked(vcID));
+    }
+
+    function getNonce(address account) external view returns (uint256) {
+        return nonces[account];
     }
 
     /**
@@ -67,12 +72,67 @@ contract CredentialRevocationRegistry {
         emit CredentialIssued(hashedVcID, msg.sender);
     }
 
+    function issueCredentialWithSignature(
+        address holder,
+        string memory vcID,
+        uint256 ttl,
+        uint256 expectedNonce,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external {
+        require(holder != address(0), "Holder address cannot be zero");
+        require(bytes(vcID).length > 0, "vcID cannot be empty");
+        require(ttl > block.timestamp, "TTL must be in the future");
+
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19Ethereum Signed Message:\n32",
+                keccak256(
+                    abi.encodePacked(
+                        address(this),
+                        expectedNonce,
+                        holder,
+                        vcID,
+                        ttl,
+                        "ISSUE"
+                    )
+                )
+            )
+        );
+
+        address signer = ecrecover(digest, v, r, s);
+        require(signer != address(0), "Invalid signature");
+        require(nonces[signer] == expectedNonce, "Bad nonce");
+        nonces[signer]++;
+
+        // Use signer as the issuer
+        bytes32 hashedVcID = _hashVcID(vcID);
+        require(
+            credentials[hashedVcID].issuer == address(0),
+            "Credential already issued"
+        );
+
+        credentials[hashedVcID] = Credential({
+            vcID: vcID,
+            issuer: signer,
+            holder: holder,
+            ttl: ttl,
+            revoked: false
+        });
+
+        holderCredentials[holder].push(hashedVcID);
+        isIssuerOfHolder[holder][signer] = true;
+
+        emit CredentialIssued(hashedVcID, signer);
+    }
+
     /**
      * Function to revoke a issued credential for a holder
      * @param holder address of the credential holder
      * @param vcID  The unique identifier of the credential
      */
-    function revokeCredential(address holder, string memory vcID) external {
+    function revokeCredential(address holder, string memory vcID) public {
         require(holder != address(0), "Holder address cannot be zero");
         require(bytes(vcID).length > 0, "vcID cannot be empty");
 
@@ -84,11 +144,13 @@ contract CredentialRevocationRegistry {
             msg.sender == cred.holder || msg.sender == cred.issuer,
             "Unauthorized"
         );
-        require(!cred.revoked, "Credential already revoked");
+        require(!cred.revoked, "Already revoked");
 
         cred.revoked = true;
 
-        // Remove from holderCredentials list
+        emit CredentialRevoked(hashedVcID, msg.sender, block.timestamp);
+
+        // Remove from holder's list
         bytes32[] storage credList = holderCredentials[holder];
         for (uint256 i = 0; i < credList.length; i++) {
             if (credList[i] == hashedVcID) {
@@ -98,27 +160,44 @@ contract CredentialRevocationRegistry {
             }
         }
 
-        // Remove the credential from the holder's storage
-        _deleteCredential(hashedVcID);
-
-        emit CredentialRevoked(hashedVcID, msg.sender, block.timestamp);
+        delete credentials[hashedVcID];
     }
 
-    /**
-     * @dev Internal function to permanently delete a credential from storage
-     * @param credentialHash The hash of the credential to delete
-     */
-    function _deleteCredential(bytes32 credentialHash) internal {
-        require(
-            credentials[credentialHash].issuer != address(0),
-            "Credential does not exist"
-        );
-        require(
-            credentials[credentialHash].revoked,
-            "Credential must be revoked first"
+    function revokeCredentialWithSignature(
+        address holder,
+        string memory vcID,
+        uint256 expectedNonce,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external {
+        require(holder != address(0), "Holder address cannot be zero");
+        require(bytes(vcID).length > 0, "vcID cannot be empty");
+
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19Ethereum Signed Message:\n32",
+                keccak256(
+                    abi.encodePacked(
+                        address(this),
+                        expectedNonce,
+                        holder,
+                        vcID,
+                        "REVOKE"
+                    )
+                )
+            )
         );
 
-        delete credentials[credentialHash]; // Remove from storage
+        address signer = ecrecover(digest, v, r, s);
+        require(
+            signer == holder || _isIssuerForHolder(signer, holder),
+            "Invalid signature"
+        );
+        require(nonces[signer] == expectedNonce, "Bad nonce");
+        nonces[signer]++;
+
+        revokeCredential(holder, vcID);
     }
 
     /**
@@ -129,75 +208,57 @@ contract CredentialRevocationRegistry {
     function isRevoked(string memory vcID) external view returns (bool) {
         bytes32 hashedVcID = _hashVcID(vcID);
         Credential storage cred = credentials[hashedVcID];
-        if (cred.issuer == address(0)) {
-            return true;
-        }
-        return cred.revoked || (block.timestamp > cred.ttl);
+        if (cred.issuer == address(0)) return true;
+        return cred.revoked || block.timestamp > cred.ttl;
     }
 
     /**
-     * WARNING: This function is for testing purposes only and should not be used in production due to risk of replay of signatures
      * Function to get credentials for a holder
      * @param holder address of the credential holder
-     * @param sigV  The recovery id of the signature
-     * @param sigR  The r value of the signature
-     * @param sigS  The s value of the signature
+     * @param v  The recovery id of the signature
+     * @param r  The r value of the signature
+     * @param s The s value of the signature
      * @param hash  The hash of the message
      * @return Credential[]  List of credentials for the holder
      */
     function getCredentialsForHolder(
         address holder,
-        uint8 sigV,
-        bytes32 sigR,
-        bytes32 sigS,
+        uint8 v,
+        bytes32 r,
+        bytes32 s,
         bytes32 hash
     ) external view returns (Credential[] memory) {
-        require(holder != address(0), "Holder address cannot be zero");
+        require(holder != address(0), "Holder cannot be zero");
 
         bytes32 prefixedHash = keccak256(
             abi.encodePacked("\x19Ethereum Signed Message:\n32", hash)
         );
-        address signer = ecrecover(prefixedHash, sigV, sigR, sigS);
+        address signer = ecrecover(prefixedHash, v, r, s);
         require(
             signer == holder || _isIssuerForHolder(signer, holder),
-            "Invalid signature"
+            "Unauthorized"
         );
 
-        bytes32[] storage credentialHashes = holderCredentials[holder];
-        require(credentialHashes.length > 0, "No credentials found");
-
-        // If signer is holder, return all credentials
-        if (signer == holder) {
-            Credential[] memory allCreds = new Credential[](
-                credentialHashes.length
-            );
-            for (uint256 i = 0; i < credentialHashes.length; i++) {
-                allCreds[i] = credentials[credentialHashes[i]];
-            }
-            return allCreds;
-        }
-
-        // Else, signer is issuer → filter only their credentials
+        bytes32[] storage hashes = holderCredentials[holder];
         uint256 count = 0;
 
-        // First pass: count matching credentials
-        for (uint256 i = 0; i < credentialHashes.length; i++) {
-            if (credentials[credentialHashes[i]].issuer == signer) {
+        for (uint256 i = 0; i < hashes.length; i++) {
+            if (signer == holder || credentials[hashes[i]].issuer == signer) {
                 count++;
             }
         }
 
-        Credential[] memory filteredCreds = new Credential[](count);
+        Credential[] memory results = new Credential[](count);
         uint256 j = 0;
-        for (uint256 i = 0; i < credentialHashes.length; i++) {
-            Credential memory cred = credentials[credentialHashes[i]];
-            if (cred.issuer == signer) {
-                filteredCreds[j] = cred;
+        for (uint256 i = 0; i < hashes.length; i++) {
+            Credential storage cred = credentials[hashes[i]];
+            if (signer == holder || cred.issuer == signer) {
+                results[j] = cred;
                 j++;
             }
         }
 
-        return filteredCreds;
+        return results;
     }
 
     /**

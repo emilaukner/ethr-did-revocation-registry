@@ -24,6 +24,67 @@ describe('CredentialRevocationRegistry', function () {
 		).to.emit(revocationRegistry, 'CredentialIssued');
 	});
 
+	it('Should issue a credential using a valid signature and nonce', async function () {
+		// Step 1: Get current nonce for the issuer
+		const nonce = await revocationRegistry.getNonce(issuer1.address);
+
+		// Step 2: Build message hash
+		const messageHash = ethers.keccak256(
+			ethers.solidityPacked(
+				['address', 'uint256', 'address', 'string', 'uint256', 'string'],
+				[
+					revocationRegistry.target,
+					nonce,
+					holderSigner.address,
+					vcID,
+					ttl,
+					'ISSUE',
+				]
+			)
+		);
+
+		// Step 3: Sign it off-chain
+		const signedMessage = await issuer1.signMessage(
+			ethers.getBytes(messageHash)
+		);
+		const signature = ethers.Signature.from(signedMessage);
+
+		// Step 4: Submit on-chain using a relayer
+		await expect(
+			revocationRegistry.issueCredentialWithSignature(
+				holderSigner.address,
+				vcID,
+				ttl,
+				nonce,
+				signature.v,
+				signature.r,
+				signature.s
+			)
+		).to.emit(revocationRegistry, 'CredentialIssued');
+
+		// Step 5: Confirm it's now in the registry
+		const messageHashAuth = ethers.keccak256(
+			ethers.toUtf8Bytes('Authentication Request')
+		);
+		const authSignature = ethers.Signature.from(
+			await holderSigner.signMessage(ethers.getBytes(messageHashAuth))
+		);
+
+		const credentials = await revocationRegistry.getCredentialsForHolder(
+			holderSigner.address,
+			authSignature.v,
+			authSignature.r,
+			authSignature.s,
+			messageHashAuth
+		);
+
+		expect(credentials.length).to.equal(1);
+		expect(credentials[0].issuer).to.equal(issuer1.address);
+		expect(credentials[0].vcID).to.equal(vcID);
+		expect(credentials[0].ttl).to.equal(ttl);
+		expect(credentials[0].revoked).to.equal(false);
+	});
+
 	it('Should allow the issuer to revoke a credential before expiry', async function () {
 		await revocationRegistry
 			.connect(issuer1)
@@ -113,7 +174,7 @@ describe('CredentialRevocationRegistry', function () {
 		).to.be.revertedWith('Credential already issued');
 	});
 
-	it('should prevent trying to view non-existent credentials', async function () {
+	it('should return an empty list when holder has no credentials', async function () {
 		const messageHash = ethers.keccak256(
 			ethers.toUtf8Bytes('Authentication Request')
 		);
@@ -122,15 +183,15 @@ describe('CredentialRevocationRegistry', function () {
 		);
 		const signature = ethers.Signature.from(signedMessage);
 
-		await expect(
-			revocationRegistry.getCredentialsForHolder(
-				holderSigner.address,
-				signature.v,
-				signature.r,
-				signature.s,
-				messageHash
-			)
-		).to.be.revertedWith('No credentials found');
+		const credentials = await revocationRegistry.getCredentialsForHolder(
+			holderSigner.address,
+			signature.v,
+			signature.r,
+			signature.s,
+			messageHash
+		);
+
+		expect(credentials).to.be.an('array').that.is.empty;
 	});
 
 	it('Should allow the holder to retrieve their credentials with a valid signature', async function () {
@@ -242,81 +303,72 @@ describe('CredentialRevocationRegistry', function () {
 				signature.s,
 				messageHash
 			)
-		).to.be.revertedWith('Invalid signature');
+		).to.be.revertedWith('Unauthorized');
 	});
 
-	it('Should remove revoked credentials using cleanupRevokedCredentials', async function () {
+	it('Should revoke a credential using a valid signature and nonce', async function () {
 		await revocationRegistry
 			.connect(issuer1)
 			.issueCredential(holderSigner.address, vcID, ttl);
 
-		await revocationRegistry
-			.connect(issuer1)
-			.revokeCredential(holderSigner.address, vcID);
+		const nonce = await revocationRegistry.nonces(holderSigner.address);
+		const messageHash = ethers.keccak256(
+			ethers.solidityPacked(
+				['address', 'uint256', 'address', 'string', 'string'],
+				[revocationRegistry.target, nonce, holderSigner.address, vcID, 'REVOKE']
+			)
+		);
+		const signedMessage = await holderSigner.signMessage(
+			ethers.getBytes(messageHash)
+		);
+		const signature = ethers.Signature.from(signedMessage);
+
+		await expect(
+			revocationRegistry.revokeCredentialWithSignature(
+				holderSigner.address,
+				vcID,
+				nonce,
+				signature.v,
+				signature.r,
+				signature.s
+			)
+		).to.emit(revocationRegistry, 'CredentialRevoked');
 
 		expect(await revocationRegistry.isRevoked(vcID)).to.be.true;
-
-		const messageHash = ethers.keccak256(ethers.toUtf8Bytes('Cleanup Request'));
-		const signedMessage = await holderSigner.signMessage(
-			ethers.getBytes(messageHash)
-		);
-		const signature = ethers.Signature.from(signedMessage);
-
-		// Perform cleanup
-		await revocationRegistry.cleanupRevokedCredentials(
-			holderSigner.address,
-			signature.v,
-			signature.r,
-			signature.s,
-			messageHash
-		);
-
-		// Verify credential has been removed
-		await expect(
-			revocationRegistry.getCredentialsForHolder(
-				holderSigner.address,
-				signature.v,
-				signature.r,
-				signature.s,
-				messageHash
-			)
-		).to.be.revertedWith('No credentials found');
 	});
 
-	it('Should revoke and remove expired credentials using cleanupRevokedCredentials', async function () {
-		const shortTTL = (await time.latest()) + 5; // TTL 5 seconds in the future
+	it('Should return the correct nonce for an account', async function () {
+		const nonceBefore = await revocationRegistry.nonces(holderSigner.address);
+		expect(nonceBefore).to.equal(0);
 
 		await revocationRegistry
 			.connect(issuer1)
-			.issueCredential(holderSigner.address, vcID, shortTTL);
+			.issueCredential(holderSigner.address, vcID, ttl);
 
-		// Wait for expiration
-		await time.increase(6);
+		const nonce = await revocationRegistry.nonces(holderSigner.address);
+		expect(nonce).to.equal(0); // nonce should still be 0 (not incremented until sig-based op)
 
-		// Call cleanup
-		const messageHash = ethers.keccak256(ethers.toUtf8Bytes('Cleanup Request'));
+		const messageHash = ethers.keccak256(
+			ethers.solidityPacked(
+				['address', 'uint256', 'address', 'string', 'string'],
+				[revocationRegistry.target, nonce, holderSigner.address, vcID, 'REVOKE']
+			)
+		);
 		const signedMessage = await holderSigner.signMessage(
 			ethers.getBytes(messageHash)
 		);
 		const signature = ethers.Signature.from(signedMessage);
 
-		await revocationRegistry.cleanupRevokedCredentials(
+		await revocationRegistry.revokeCredentialWithSignature(
 			holderSigner.address,
+			vcID,
+			nonce,
 			signature.v,
 			signature.r,
-			signature.s,
-			messageHash
+			signature.s
 		);
 
-		// Confirm the credential was deleted
-		await expect(
-			revocationRegistry.getCredentialsForHolder(
-				holderSigner.address,
-				signature.v,
-				signature.r,
-				signature.s,
-				messageHash
-			)
-		).to.be.revertedWith('No credentials found');
+		const nonceAfter = await revocationRegistry.nonces(holderSigner.address);
+		expect(nonceAfter).to.equal(1);
 	});
 });
